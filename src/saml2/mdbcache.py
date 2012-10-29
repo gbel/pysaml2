@@ -1,30 +1,33 @@
 #!/usr/bin/env python
 
-__author__ = 'rolandh'
-
-from pymongo import Connection
-#import cjson
 import time
+import pymongo
 from datetime import datetime
 
 from saml2 import time_util
 from saml2.cache import ToOld
 from saml2.time_util import TIME_FORMAT
 
+
 class Cache(object):
-    def __init__(self, server=None, debug=0, db=None):
-        if server:
-            connection = Connection(server)
-        else:
-            connection = Connection()
+    def __init__(self, config):
+        host = config['host']
+        port = config['port']
+        db_name = config['db']
+        auth = config['auth']
+        username = config['user']
+        password = config['password']
 
-        if db:
-            self._db = connection[db]
-        else:
-            self._db = connection.pysaml2
+        try:
+            connection = pymongo.Connection(host=host, port=port)
+            self._db = connection[db_name]
+        except pymongo.errors.ConnectionFailure, e:
+            raise e
 
-        self._cache = self._db.collection
-        self.debug = debug
+        if auth == 'True':
+            self._db.authenticate(username, password)
+
+        self._cache = self._db['sso_session']
 
     def delete(self, subject_id):
         self._cache.remove({"subject_id": subject_id})
@@ -60,7 +63,9 @@ class Cache(object):
         else:
             for entity_id in entities:
                 try:
-                    info = self.get(subject_id, entity_id, check_not_on_or_after)
+                    info = self.get(subject_id,
+                                    entity_id,
+                                    check_not_on_or_after)
                 except ToOld:
                     oldees.append(entity_id)
                     continue
@@ -73,7 +78,7 @@ class Cache(object):
                         res[key] = vals
 
         return res, oldees
-                
+
     def _get_info(self, item, check_not_on_or_after=True):
         """ Get session information about a subject gotten from a
         specified IdP/AA.
@@ -100,8 +105,9 @@ class Cache(object):
             return self._get_info(res, check_not_on_or_after)
 
     def set(self, subject_id, entity_id, info, timestamp=0):
-        """ Stores session information in the cache. Assumes that the subject_id
-        is unique within the context of the Service Provider.
+        """ Stores session information in the cache. Assumes that
+        the subject_id is unique within the context of the
+        Service Provider.
 
         :param subject_id: The subject identifier
         :param entity_id: The identifier of the entity_id/receiver of an
@@ -114,13 +120,10 @@ class Cache(object):
                                                          time.struct_time):
             timestamp = time.strftime(TIME_FORMAT, timestamp)
 
-        doc = {"subject_id": subject_id,
+        self._cache.insert({"subject_id": subject_id,
                "entity_id": entity_id,
                "info": info,
-               "timestamp": timestamp}
-
-        _ = self._cache.insert(doc)
-
+               "timestamp": timestamp})
 
     def reset(self, subject_id, entity_id):
         """ Scrap the assertions received from a IdP or an AA about a special
@@ -130,9 +133,10 @@ class Cache(object):
         :param entity_id: The identifier of the entity_id of the assertion
         :return:
         """
-        self._cache.update({"subject_id":subject_id,
-                                   "entity_id":entity_id},
-                                  {"$set": {"info":{}, "timestamp": 0}})
+        self._cache.update({"subject_id": subject_id,
+                            "entity_id": entity_id},
+                           {"$set": {"info": {},
+                                     "timestamp": 0}})
 
     def entities(self, subject_id):
         """ Returns all the entities of assertions for a subject, disregarding
@@ -146,7 +150,6 @@ class Cache(object):
                     subject_id})]
         except ValueError:
             return []
-
 
     def receivers(self, subject_id):
         """ Another name for entities() just to make it more logic in the IdP
@@ -162,8 +165,8 @@ class Cache(object):
             valid or not.
         """
 
-        item = self._cache.find_one({"subject_id":subject_id,
-                                   "entity_id":entity_id})
+        item = self._cache.find_one({"subject_id": subject_id,
+                                   "entity_id": entity_id})
         try:
             return time_util.not_on_or_after(item["timestamp"])
         except ToOld:
@@ -181,19 +184,18 @@ class Cache(object):
 
     def update(self, subject_id, entity_id, ava):
         """ """
-        item = self._cache.find_one({"subject_id":subject_id,
-                                       "entity_id":entity_id})
+        item = self._cache.find_one({"subject_id": subject_id,
+                                       "entity_id": entity_id})
         info = item["info"]
         info["ava"].update(ava)
-        self._cache.update({"subject_id":subject_id,
-                            "entity_id":entity_id},
-                            {"$set": {"info":info}})
-
+        self._cache.update({"subject_id": subject_id,
+                            "entity_id": entity_id},
+                            {"$set": {"info": info}})
 
     def valid_to(self, subject_id, entity_id, newtime):
         """ """
-        self._cache.update({"subject_id":subject_id,
-                            "entity_id":entity_id},
+        self._cache.update({"subject_id": subject_id,
+                            "entity_id": entity_id},
                             {"$set": {"timestamp": newtime}})
 
     def clear(self):
